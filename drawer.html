@@ -1,0 +1,1389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Drawing App - Visual Clone</title>
+    <!-- 
+    Requirements:
+    - Drawing with brush (left-click)
+    - Text input
+    - Undo/Redo functionality (fixed to require correct number of clicks)
+    - Font size adjustments
+    - Brush size controls
+    - No mouse wheel functionality needed
+    - Extensive logging for troubleshooting
+    - Fill functionality on space key (finds all connected pixels with same color)
+    - Fill functionality on double-click (alternative method)
+    - Selection functionality by holding Shift and dragging 
+    - Copy selected area with Cmd+C
+    - Paste copied area at cursor position with Cmd+V
+    - Default font size is based on brush size (size * 10)
+    - Maximum font size is 200px
+    - Right-click selects alternative color (white by default)
+    - Alternative color picker available in toolbar
+    - Text uses active color (primary or alternative)
+    - Color palette with preset colors for quick selection (click to select primary color, Alt+click for alternative)
+    -->
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #canvas {
+            display: block;
+            background-color: white;
+            cursor: crosshair;
+        }
+        .toolbar {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            color: white;
+        }
+        button {
+            margin: 0 5px;
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+        .color-picker {
+            margin: 0 5px;
+        }
+        .color-picker-label {
+            margin: 0 5px;
+            font-size: 12px;
+            vertical-align: middle;
+        }
+        .active-color {
+            outline: 2px solid #00ff00;
+            outline-offset: 2px;
+        }
+        .color-palette {
+            display: flex;
+            margin: 5px 0;
+            gap: 2px;
+            flex-wrap: wrap;
+            max-width: 100%;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+        .palette-color {
+            width: 21px;
+            height: 21px;
+            cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.3);
+            transition: transform 0.1s;
+        }
+        .palette-color:hover {
+            transform: scale(1.2);
+            z-index: 10;
+            box-shadow: 0 0 5px white;
+        }
+        .color-mode-toggle {
+            display: flex;
+            justify-content: center;
+            margin-top: 5px;
+        }
+        .mode-button {
+            padding: 3px 8px;
+            margin: 0 5px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            border: 1px solid rgba(255,255,255,0.5);
+            background: rgba(30,30,30,0.7);
+            color: white;
+        }
+        .mode-button.active {
+            background: rgba(60,130,220,0.8);
+            box-shadow: 0 0 5px rgba(100,180,255,0.8);
+        }
+        #textInput {
+            position: absolute;
+            background: transparent;
+            border: 1px dashed #999;
+            font-family: Arial, sans-serif;
+            min-width: 50px;
+            min-height: 20px;
+            padding: 4px;
+            outline: none;
+            display: none;
+            z-index: 100;
+        }
+        #floatingText {
+            position: absolute;
+            pointer-events: none;
+            font-family: Arial, sans-serif;
+            z-index: 101;
+            display: none;
+        }
+        #selectionRect {
+            position: absolute;
+            border: 1px dashed #0078d7;
+            background-color: rgba(0, 120, 215, 0.1);
+            pointer-events: none;
+            z-index: 99;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <button id="clear">Clear</button>
+        <span class="color-picker-label">Primary:</span>
+        <input type="color" id="colorPicker" class="color-picker active-color" value="#000000">
+        <span class="color-picker-label">Alt (Right-click):</span>
+        <input type="color" id="altColorPicker" class="color-picker" value="#FFFFFF">
+        <input type="range" id="brushSize" min="1" max="20" value="5">
+        <div class="color-palette" id="colorPalette">
+            <!-- Colors will be generated programmatically -->
+        </div>
+    </div>
+    <div id="floatingText"></div>
+    <div id="selectionRect"></div>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const clearButton = document.getElementById('clear');
+        const colorPicker = document.getElementById('colorPicker');
+        const altColorPicker = document.getElementById('altColorPicker');
+        const brushSize = document.getElementById('brushSize');
+
+        // Set canvas size
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // For visual appearance only
+        let defaultFontSize = 20; // Default value should correspond to default brush size (5)
+        let minFontSize = 20; // Increased minimum size
+        let maxFontSize = 200; // Updated to 200 as requested
+        
+        // Drawing state
+        let isDrawing = false;
+        let isTyping = false;
+        let typedText = '';
+        let typingPosition = { x: 0, y: 0 }; // Fixed position for typing
+        
+        // Track last position for drawing
+        let lastX = 0;
+        let lastY = 0;
+        
+        // Modes - just for logging
+        const MODES = {
+            NORMAL: 'normal',
+            DRAWING: 'drawing',
+            TYPING: 'typing',
+            SELECTING: 'selecting'
+        };
+        let currentMode = MODES.NORMAL;
+        
+        // Settings for visual appearance and logging
+        let color = '#000000';
+        let altColor = '#FFFFFF';
+        let activeColor = color; // The color currently being used for drawing
+        let isUsingAltColor = false; // Track if we're using alternative color
+        let size = 5;
+        
+        // Cursor position tracking
+        let lastCursorPosition = { x: 0, y: 0 };
+        
+        // Log history
+        let logHistory = [];
+        const MAX_LOG_ENTRIES = 100;
+        
+        // Status element for debugging
+        let statusElement = null;
+        
+        // Undo/Redo stacks
+        let undoStack = [];
+        let redoStack = [];
+        const MAX_HISTORY_STATES = 20;
+        
+        // Selection state
+        let isSelecting = false;
+        let selectionStart = { x: 0, y: 0 };
+        let selectionEnd = { x: 0, y: 0 };
+        let selectionRect = null;
+        let copiedImageData = null;
+        
+        // Initialize
+        function init() {
+            // Create status element
+            statusElement = document.createElement('div');
+            statusElement.style.cssText = 'position:fixed; bottom:10px; right:10px; background:rgba(0,0,0,0.7); color:white; padding:10px; border-radius:5px; z-index:1000; font-family:monospace; max-width:300px;';
+            document.body.appendChild(statusElement);
+            
+            // Get selection rectangle element
+            selectionRect = document.getElementById('selectionRect');
+            
+            // Log initialization
+            logAction('APP', 'Initializing application (visual copy)');
+            
+            // Update default font size based on default brush size
+            updateFontSizeFromBrush();
+            logAction('SETTINGS', `Using default font size: ${defaultFontSize}px based on brush size ${size}`);
+            
+            // Generate rainbow color palette
+            generateColorPalette();
+            
+            // Update color and size from inputs (logging only)
+            colorPicker.addEventListener('change', e => {
+                color = e.target.value;
+                if (!isUsingAltColor) {
+                    activeColor = color;
+                }
+                logAction('SETTINGS', `Primary color changed to ${color}`);
+            });
+            
+            altColorPicker.addEventListener('change', e => {
+                altColor = e.target.value;
+                if (isUsingAltColor) {
+                    activeColor = altColor;
+                }
+                logAction('SETTINGS', `Alternative color changed to ${altColor}`);
+            });
+            
+            brushSize.addEventListener('change', e => {
+                size = e.target.value;
+                // Update font size when brush size changes
+                updateFontSizeFromBrush();
+                logAction('SETTINGS', `Brush size changed to ${size}px, font size to ${defaultFontSize}px`);
+                updateStatus(`Brush size: ${size}px, Font size: ${defaultFontSize}px`);
+            });
+            
+            // Clear button - now clears the canvas
+            clearButton.addEventListener('click', () => {
+                logAction('CANVAS', 'Clear button clicked');
+                
+                // Save state before clearing - moved after clearing
+                
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // Clear any selection
+                clearSelection();
+                
+                // Save state after clearing
+                saveCanvasState();
+                
+                updateStatus('Canvas cleared');
+            });
+            
+            // Resize canvas when window resizes
+            window.addEventListener('resize', () => {
+                logAction('WINDOW', `Resize: ${window.innerWidth}x${window.innerHeight}`);
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                ctx.putImageData(imageData, 0, 0);
+                updateStatus(`Window resized to ${window.innerWidth}x${window.innerHeight}`);
+            });
+            
+            // Initial canvas state for undo
+            saveCanvasState();
+            
+            // Set up text input for visual appearance
+            const textInput = document.getElementById('textInput');
+            
+            // Log all pointer events on canvas and implement drawing
+            canvas.addEventListener('pointerdown', (e) => {
+                lastCursorPosition.x = e.clientX;
+                lastCursorPosition.y = e.clientY;
+                logAction('CANVAS', `Pointer down at (${e.clientX}, ${e.clientY})`, { pointerId: e.pointerId, button: e.button });
+                
+                // Commit typing if active
+                if (isTyping) {
+                    commitTyping();
+                }
+                
+                // Get position in canvas coordinates
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                
+                // Check if shift key is pressed for selection mode
+                if (e.shiftKey) {
+                    // Start selection mode
+                    isSelecting = true;
+                    isDrawing = false;
+                    currentMode = MODES.SELECTING;
+                    
+                    // Hide any existing selection
+                    selectionRect.style.display = 'none';
+                    
+                    // Set selection start position
+                    selectionStart.x = x;
+                    selectionStart.y = y;
+                    selectionEnd.x = x;
+                    selectionEnd.y = y;
+                    
+                    logAction('SELECTION', `Selection started at (${x}, ${y})`, { shiftKey: true });
+                    updateStatus('Selection started: Hold and drag to select area');
+                    
+                    return;
+                }
+                
+                // Check if right button (button 2) was used
+                if (e.button === 2) {
+                    // Right click - toggle between primary and alternative color
+                    isUsingAltColor = !isUsingAltColor;
+                    activeColor = isUsingAltColor ? altColor : color;
+                    
+                    // Update UI to show which color is active
+                    colorPicker.classList.toggle('active-color', !isUsingAltColor);
+                    altColorPicker.classList.toggle('active-color', isUsingAltColor);
+                    
+                    logAction('CANVAS', `Right-click - toggled to ${isUsingAltColor ? 'alternative' : 'primary'} color: ${activeColor}`);
+                    updateStatus(`Using ${isUsingAltColor ? 'alternative' : 'primary'} color: ${activeColor}`);
+                    e.preventDefault();
+                    return;
+                }
+                
+                // For left-click, keep the current active color (don't reset to primary)
+                // Hide any existing selection when starting to draw
+                selectionRect.style.display = 'none';
+                
+                // Regular drawing with left-click
+                isDrawing = true;
+                currentMode = MODES.DRAWING;
+                
+                // Save starting position
+                lastX = x;
+                lastY = y;
+                
+                // Draw a dot at the starting point
+                ctx.beginPath();
+                ctx.arc(lastX, lastY, size/2, 0, Math.PI * 2);
+                ctx.fillStyle = activeColor;
+                ctx.fill();
+                
+                updateStatus('Drawing started');
+            });
+            
+            canvas.addEventListener('pointermove', (e) => {
+                lastCursorPosition.x = e.clientX;
+                lastCursorPosition.y = e.clientY;
+                
+                // Only log occasionally to avoid flooding
+                if (Math.random() < 0.01) {
+                    logAction('CANVAS', `Pointer move at (${e.clientX}, ${e.clientY})`, { pointerId: e.pointerId });
+                }
+                
+                // Commit typing if active instead of moving text
+                if (isTyping) {
+                    commitTyping();
+                    return;
+                }
+                
+                // Handle selection updating
+                if (isSelecting) {
+                    // Get current position in canvas coordinates
+                    const rect = canvas.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    
+                    // Update selection end position
+                    selectionEnd.x = x;
+                    selectionEnd.y = y;
+                    
+                    // Update selection rectangle display
+                    updateSelectionRect();
+                    
+                    // Log selection update occasionally to avoid flooding
+                    if (Math.random() < 0.05) {
+                        logAction('SELECTION', `Selection updating to (${x}, ${y})`, { 
+                            start: selectionStart, 
+                            end: selectionEnd 
+                        });
+                    }
+                    
+                    return;
+                }
+                
+                // Draw if we're in drawing mode
+                if (isDrawing) {
+                    // Get current position in canvas coordinates
+                    const rect = canvas.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    
+                    // Draw line from last position to current position
+                    ctx.beginPath();
+                    ctx.moveTo(lastX, lastY);
+                    ctx.lineTo(x, y);
+                    ctx.strokeStyle = activeColor;
+                    ctx.lineWidth = size;
+                    ctx.lineCap = 'round';
+                    ctx.stroke();
+                    
+                    // Update position
+                    lastX = x;
+                    lastY = y;
+                }
+            });
+            
+            canvas.addEventListener('pointerup', (e) => {
+                logAction('CANVAS', `Pointer up at (${e.clientX}, ${e.clientY})`, { pointerId: e.pointerId });
+                
+                if (isSelecting) {
+                    // Finalize selection area
+                    const rect = canvas.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    
+                    // Update the final position
+                    selectionEnd.x = x;
+                    selectionEnd.y = y;
+                    
+                    // Update selection rectangle 
+                    updateSelectionRect();
+                    
+                    // Only stop selecting, keep the visual rectangle
+                    isSelecting = false;
+                    currentMode = MODES.NORMAL;
+                    
+                    logAction('SELECTION', `Selection completed from (${selectionStart.x}, ${selectionStart.y}) to (${selectionEnd.x}, ${selectionEnd.y})`);
+                    updateStatus(`Area selected: ${Math.abs(selectionEnd.x - selectionStart.x)}x${Math.abs(selectionEnd.y - selectionStart.y)} pixels. Use Cmd+C to copy.`);
+                    return;
+                }
+                
+                if (isDrawing) {
+                    // Save canvas state after drawing is complete
+                    saveCanvasState();
+                    
+                    isDrawing = false;
+                    currentMode = MODES.NORMAL;
+                    
+                    // Don't reset the active color after drawing - keep the current selection
+                    
+                    updateStatus('Drawing finished');
+                }
+            });
+            
+            canvas.addEventListener('pointerleave', (e) => {
+                logAction('CANVAS', `Pointer leave at (${e.clientX}, ${e.clientY})`, { pointerId: e.pointerId });
+                
+                if (isSelecting) {
+                    // Handle leaving during selection - keep the selection in progress
+                    // but update the status for user awareness
+                    updateStatus('Selection in progress: Return to canvas to continue');
+                    return;
+                }
+                
+                if (isDrawing) {
+                    isDrawing = false;
+                    currentMode = MODES.NORMAL;
+                    
+                    // Don't reset the active color if pointer leaves
+                    
+                    updateStatus('Drawing cancelled (pointer left canvas)');
+                }
+            });
+            
+            // Keyboard event logging
+            document.addEventListener('keydown', (e) => {
+                logAction('KEYBOARD', `Key pressed: ${e.key}`, {
+                    ctrl: e.ctrlKey,
+                    shift: e.shiftKey,
+                    alt: e.altKey,
+                    meta: e.metaKey
+                });
+                
+                // Handle copy/paste with command/ctrl+c/v
+                if ((e.metaKey || e.ctrlKey)) {
+                    if (e.key === 'c') {
+                        // Copy selected area
+                        copySelectedArea();
+                        e.preventDefault();
+                        return;
+                    } else if (e.key === 'v') {
+                        // Paste copied area
+                        pasteAtCursor();
+                        e.preventDefault();
+                        return;
+                    }
+                }
+                
+                // Handle space key for fill - primary fill method
+                if (e.key === ' ' || e.code === 'Space') {
+                    e.preventDefault();
+                    
+                    // Add space to text if typing instead of committing
+                    if (isTyping) {
+                        typedText += ' ';
+                        updateFloatingText();
+                        logAction('TYPING', 'Added space to typed text', { text: typedText });
+                        return;
+                    }
+                    
+                    // Get cursor position
+                    const rect = canvas.getBoundingClientRect();
+                    const x = Math.floor(lastCursorPosition.x - rect.left);
+                    const y = Math.floor(lastCursorPosition.y - rect.top);
+                    
+                    logAction('CANVAS', `Space key fill initiated at (${x}, ${y})`, { 
+                        color: activeColor, 
+                        brushSize: size,
+                        isOverCanvas: (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height)
+                    });
+                    
+                    // Ensure cursor is over canvas
+                    if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
+                        // Save canvas state before filling
+                        saveCanvasState();
+                        
+                        // Perform flood fill
+                        floodFillWithBrushSize(x, y, activeColor, size);
+                        
+                        updateStatus(`Filled area at (${x}, ${y}) with ${activeColor} using space key`);
+                    } else {
+                        logAction('CANVAS', 'Space key fill attempted but cursor not over canvas');
+                        updateStatus('Cannot fill: cursor not over canvas');
+                    }
+                    
+                    return;
+                }
+                
+                // Handle undo/redo with command/ctrl+z
+                if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+                    e.preventDefault();
+                    if (e.shiftKey) {
+                        redoAction();
+                    } else {
+                        undoAction();
+                    }
+                    return;
+                }
+                
+                // Right arrow to increase brush size - works in any mode
+                if (e.key === 'ArrowRight') {
+                    e.preventDefault();
+                    size = Math.min(20, parseInt(size) + 1);
+                    brushSize.value = size;
+                    
+                    // Update font size based on brush size
+                    updateFontSizeFromBrush();
+                    
+                    // If typing, update the floating text
+                    if (isTyping) {
+                        // Update text with new font size
+                        const floatingText = document.getElementById('floatingText');
+                        floatingText.style.fontSize = `${defaultFontSize}px`;
+                        
+                        // Update position
+                        updateFloatingTextPosition(typingPosition.x, typingPosition.y);
+                    }
+                    
+                    console.log(`Brush size increased to ${size}px, font size: ${defaultFontSize}px`);
+                    logAction('SETTINGS', `Brush size increased to ${size}px, font size: ${defaultFontSize}px`);
+                    updateStatus(`Brush size: ${size}px, Font size: ${defaultFontSize}px`);
+                    return;
+                }
+                
+                // Left arrow to decrease brush size - works in any mode
+                if (e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    size = Math.max(1, parseInt(size) - 1);
+                    brushSize.value = size;
+                    
+                    // Update font size based on brush size
+                    updateFontSizeFromBrush();
+                    
+                    // If typing, update the floating text
+                    if (isTyping) {
+                        // Update text with new font size
+                        const floatingText = document.getElementById('floatingText');
+                        floatingText.style.fontSize = `${defaultFontSize}px`;
+                        
+                        // Update position
+                        updateFloatingTextPosition(typingPosition.x, typingPosition.y);
+                    }
+                    
+                    console.log(`Brush size decreased to ${size}px, font size: ${defaultFontSize}px`);
+                    logAction('SETTINGS', `Brush size decreased to ${size}px, font size: ${defaultFontSize}px`);
+                    updateStatus(`Brush size: ${size}px, Font size: ${defaultFontSize}px`);
+                    return;
+                }
+                
+                // Handle typing mode
+                if (isTyping) {
+                    // No need for arrow key handling here, moved above
+                    
+                    // Add the character
+                    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                        typedText += e.key;
+                        updateFloatingText();
+                        e.preventDefault(); // Prevent default to avoid double input
+                    } else if (e.key === 'Backspace') {
+                        // Handle backspace
+                        typedText = typedText.slice(0, -1);
+                        updateFloatingText();
+                        
+                        if (typedText === '') {
+                            stopTyping();
+                        }
+                        
+                        e.preventDefault();
+                    } else if (e.key === 'Enter') {
+                        // Commit typing when Enter is pressed
+                        commitTyping();
+                        e.preventDefault();
+                    } else if (e.key === 'Escape') {
+                        // Cancel typing when Escape is pressed
+                        stopTyping();
+                        e.preventDefault();
+                    }
+                    return;
+                }
+                
+                // Start typing mode with a character key
+                if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    startTyping();
+                    typedText += e.key;
+                    updateFloatingText();
+                    e.preventDefault(); // Prevent default to avoid double input
+                }
+            });
+            
+            // Document-level pointer tracking
+            document.addEventListener('pointerdown', function(e) {
+                lastCursorPosition.x = e.clientX;
+                lastCursorPosition.y = e.clientY;
+                logAction('DOCUMENT', `Pointer down at (${e.clientX}, ${e.clientY})`);
+                
+                // Commit typing if active
+                if (isTyping && e.target !== document.getElementById('floatingText')) {
+                    commitTyping();
+                }
+            });
+            
+            // Add double-click handler for fill functionality
+            canvas.addEventListener('dblclick', (e) => {
+                logAction('CANVAS', `Double click at (${e.clientX}, ${e.clientY})`, { pointerId: e.pointerId });
+                
+                // Commit typing if active
+                if (isTyping) {
+                    commitTyping();
+                }
+                
+                // Get position in canvas coordinates
+                const rect = canvas.getBoundingClientRect();
+                const x = Math.floor(e.clientX - rect.left);
+                const y = Math.floor(e.clientY - rect.top);
+                
+                // Save canvas state before filling
+                saveCanvasState();
+                
+                // Perform flood fill, using brush size to determine starting area
+                floodFillWithBrushSize(x, y, activeColor, size);
+                
+                updateStatus(`Filled area at (${x}, ${y}) with ${activeColor}`);
+            });
+            
+            updateStatus('App initialized with drawing functionality');
+            logAction('APP', 'Initialization complete');
+            logAction('APP', 'Right-click to use alternative color');
+            
+            // Prevent context menu on right-click
+            canvas.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                logAction('CANVAS', 'Context menu prevented');
+                return false;
+            });
+            
+            // Explain space key fill functionality to user
+            updateStatus('Use SPACE key to fill areas with current color. Right-click to toggle between primary and alternative colors.');
+            logAction('APP', 'Space key is now the primary fill method');
+            logAction('APP', 'Right-click toggles between primary and alternative colors');
+        }
+        
+        // Log user actions with timestamp and details
+        function logAction(category, message, details = null) {
+            const timestamp = new Date().toISOString().substr(11, 12); // HH:MM:SS.sss
+            const logEntry = {
+                timestamp,
+                category,
+                message,
+                details,
+                mode: currentMode,
+                isDrawing,
+                isTyping
+            };
+            
+            // Add to log history
+            logHistory.push(logEntry);
+            if (logHistory.length > MAX_LOG_ENTRIES) {
+                logHistory.shift(); // Remove oldest entry
+            }
+            
+            // Format log message
+            const logString = `[${timestamp}] [${category}] ${message}`;
+            console.log(logString, details ? details : '');
+            
+            return logEntry;
+        }
+        
+        // Update status display
+        function updateStatus(message) {
+            statusElement.textContent = message;
+        }
+        
+        // Add export logs function 
+        window.exportLogs = function() {
+            const logData = JSON.stringify(logHistory, null, 2);
+            const blob = new Blob([logData], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'drawing-app-logs.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            
+            logAction('APP', 'Logs exported');
+            alert('Logs exported');
+        };
+        
+        // Add a button to export logs
+        const exportButton = document.createElement('button');
+        exportButton.textContent = 'Export Logs';
+        exportButton.style.cssText = 'position:fixed; bottom:10px; left:150px; z-index:1001;';
+        exportButton.onclick = window.exportLogs;
+        document.body.appendChild(exportButton);
+        
+        // Initialize the app
+        init();
+        
+        // Function to update font size based on brush size
+        function updateFontSizeFromBrush() {
+            // Map brush size to font size
+            defaultFontSize = Math.max(minFontSize, Math.min(maxFontSize, size * 10));
+            console.log(`Font size updated to ${defaultFontSize}px from brush size ${size}`);
+            logAction('FONT', `Font size updated: ${defaultFontSize}px from brush size ${size}`);
+        }
+        
+        // Functions for undo/redo
+        function saveCanvasState() {
+            // Remove the ability to redo once a new action is performed
+            if (redoStack.length > 0) {
+                redoStack = [];
+                logAction('HISTORY', 'Redo stack cleared due to new action');
+            }
+            
+            // Save current state to undo stack
+            const state = canvas.toDataURL();
+            undoStack.push(state);
+            
+            // Limit stack size
+            if (undoStack.length > MAX_HISTORY_STATES) {
+                undoStack.shift();
+                logAction('HISTORY', 'Oldest state removed due to stack size limit');
+            }
+            
+            logAction('HISTORY', `Canvas state saved`, { 
+                undoStackSize: undoStack.length, 
+                redoStackSize: redoStack.length 
+            });
+        }
+        
+        function undoAction() {
+            if (undoStack.length <= 1) {
+                updateStatus('Nothing to undo');
+                logAction('HISTORY', 'Undo attempted but nothing to undo', { stackSize: undoStack.length });
+                return;
+            }
+            
+            // Move current state to redo stack
+            const currentState = undoStack.pop();
+            redoStack.push(currentState);
+            
+            // Load previous state
+            const previousState = undoStack[undoStack.length - 1];
+            loadCanvasState(previousState);
+            
+            logAction('HISTORY', 'Undo action performed', { 
+                undoStackSize: undoStack.length, 
+                redoStackSize: redoStack.length 
+            });
+            updateStatus('Undo: Previous state restored');
+        }
+        
+        function redoAction() {
+            if (redoStack.length === 0) {
+                updateStatus('Nothing to redo');
+                logAction('HISTORY', 'Redo attempted but nothing to redo', { stackSize: redoStack.length });
+                return;
+            }
+            
+            // Get state from redo stack
+            const nextState = redoStack.pop();
+            
+            // Add it to the undo stack
+            undoStack.push(nextState);
+            
+            // Load the state
+            loadCanvasState(nextState);
+            
+            logAction('HISTORY', 'Redo action performed', { 
+                undoStackSize: undoStack.length, 
+                redoStackSize: redoStack.length 
+            });
+            updateStatus('Redo: Action restored');
+        }
+        
+        function loadCanvasState(state) {
+            // Create an image from the saved state
+            const img = new Image();
+            img.src = state;
+            
+            // When the image loads, draw it on the canvas
+            img.onload = function() {
+                // Clear canvas
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // Draw saved state
+                ctx.drawImage(img, 0, 0);
+            };
+        }
+        
+        // Functions for direct typing
+        function startTyping() {
+            isTyping = true;
+            currentMode = MODES.TYPING;
+            typedText = '';
+            
+            // Store fixed position for typing
+            typingPosition.x = lastCursorPosition.x;
+            typingPosition.y = lastCursorPosition.y;
+            
+            const floatingText = document.getElementById('floatingText');
+            floatingText.style.color = activeColor;
+            floatingText.style.fontSize = `${defaultFontSize}px`;
+            floatingText.style.display = 'block';
+            
+            // Show current font size for reference
+            updateStatus(`Typing mode activated - Font size: ${defaultFontSize}px`);
+            
+            // Position text at fixed location (not following cursor)
+            updateFloatingTextPosition(typingPosition.x, typingPosition.y);
+            
+            logAction('TYPING', 'Started typing mode');
+        }
+        
+        function updateFloatingText() {
+            const floatingText = document.getElementById('floatingText');
+            console.log('Updating floating text with font size:', defaultFontSize);
+            floatingText.textContent = typedText;
+            floatingText.style.fontSize = `${defaultFontSize}px`;
+            console.log('After update:', floatingText.textContent, floatingText.style.fontSize);
+            logAction('TYPING', 'Updated floating text', { text: typedText, fontSize: defaultFontSize });
+        }
+        
+        function updateFloatingTextPosition(x, y) {
+            const floatingText = document.getElementById('floatingText');
+            floatingText.style.left = `${typingPosition.x}px`;
+            floatingText.style.top = `${typingPosition.y - defaultFontSize}px`;
+        }
+        
+        function commitTyping() {
+            if (!isTyping || typedText.trim() === '') {
+                stopTyping();
+                return;
+            }
+            
+            // Save state before adding text - moved after text is drawn
+            
+            // Draw text to canvas
+            ctx.font = `${defaultFontSize}px Arial`;
+            ctx.fillStyle = activeColor;
+            
+            // Convert position to canvas coordinates
+            const rect = canvas.getBoundingClientRect();
+            const x = typingPosition.x - rect.left;
+            const y = typingPosition.y - rect.top;
+            
+            ctx.fillText(typedText, x, y);
+            
+            // Save state after adding text
+            saveCanvasState();
+            
+            logAction('TYPING', 'Committed text to canvas', { text: typedText });
+            updateStatus(`Text added: "${typedText}"`);
+            
+            stopTyping();
+        }
+        
+        function stopTyping() {
+            isTyping = false;
+            currentMode = MODES.NORMAL;
+            typedText = '';
+            
+            const floatingText = document.getElementById('floatingText');
+            floatingText.style.display = 'none';
+            
+            logAction('TYPING', 'Stopped typing mode');
+            updateStatus('Typing mode deactivated');
+        }
+        
+        // Flood fill implementation with brush size consideration
+        function floodFillWithBrushSize(startX, startY, fillColor, brushSize) {
+            logAction('FILL', `Starting flood fill at (${startX}, ${startY}) with color ${fillColor} and brush size ${brushSize}`);
+            
+            // Get canvas image data
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+            const width = imageData.width;
+            const height = imageData.height;
+            
+            logAction('FILL', `Canvas dimensions: ${width}x${height}, total pixels: ${width * height}`);
+            
+            // Convert fill color from hex to RGBA
+            const fillColorRGB = hexToRgb(fillColor);
+            logAction('FILL', `Fill color RGB: (${fillColorRGB.r}, ${fillColorRGB.g}, ${fillColorRGB.b})`);
+            
+            // Get the color of the starting pixel (center point)
+            const centerPos = (startY * width + startX) * 4;
+            const centerR = data[centerPos];
+            const centerG = data[centerPos + 1];
+            const centerB = data[centerPos + 2];
+            const centerA = data[centerPos + 3];
+            
+            logAction('FILL', `Target color at starting point: RGB(${centerR}, ${centerG}, ${centerB}, ${centerA})`);
+            
+            // If target color is the same as fill color, do nothing
+            if (colorsMatch(centerR, centerG, centerB, centerA, fillColorRGB.r, fillColorRGB.g, fillColorRGB.b, 255)) {
+                logAction('FILL', 'Target color is the same as fill color, aborting');
+                return;
+            }
+            
+            // Determine if we're filling a shape with anti-aliased edges
+            const isAntiAliasedShape = centerR === 0 && centerG === 0 && centerB === 0 && centerA === 255;
+            const tolerance = isAntiAliasedShape ? 30 : 5; // Higher tolerance for black shapes
+            
+            // For black shapes, we need to handle the anti-aliased edges specially
+            let isInsideBlackShape = false;
+            if (isAntiAliasedShape) {
+                // Check surrounding pixels to determine if we're inside a black shape
+                // This helps with the fill starting point being on a gray anti-aliased pixel
+                let blackPixelCount = 0;
+                let whitePixelCount = 0;
+                
+                // Check in a small radius around the starting point
+                const checkRadius = 5;
+                for (let dy = -checkRadius; dy <= checkRadius; dy++) {
+                    for (let dx = -checkRadius; dx <= checkRadius; dx++) {
+                        const nx = startX + dx;
+                        const ny = startY + dy;
+                        
+                        // Skip if out of bounds
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+                            continue;
+                        }
+                        
+                        const nPos = (ny * width + nx) * 4;
+                        const r = data[nPos];
+                        const g = data[nPos + 1];
+                        const b = data[nPos + 2];
+                        
+                        // Count black and white pixels
+                        if (r < 30 && g < 30 && b < 30) {
+                            blackPixelCount++;
+                        } else if (r > 220 && g > 220 && b > 220) {
+                            whitePixelCount++;
+                        }
+                    }
+                }
+                
+                // If we have more white pixels than black, we're likely inside the shape
+                isInsideBlackShape = whitePixelCount > blackPixelCount;
+                logAction('FILL', `Analyzed surrounding area: ${blackPixelCount} black pixels, ${whitePixelCount} white pixels, determined to be ${isInsideBlackShape ? 'inside' : 'outside'} shape`);
+            }
+            
+            logAction('FILL', `Detected ${isAntiAliasedShape ? 'anti-aliased black shape' : 'regular area'}, using tolerance: ${tolerance}`);
+            
+            // PHASE 1: Collect all pixels to fill
+            const pixelsToFill = [];
+            const stack = [[startX, startY]];
+            const visited = new Set();
+            visited.add(`${startX},${startY}`);
+            
+            const startTime = performance.now();
+            logAction('FILL', 'Phase 1: Collecting pixels to fill');
+            
+            while (stack.length > 0) {
+                const [x, y] = stack.pop();
+                const pos = (y * width + x) * 4;
+                
+                // Add this pixel to the list to fill
+                pixelsToFill.push([x, y, pos]);
+                
+                // Check neighboring pixels (8-way connectivity)
+                const neighbors = [
+                    [x + 1, y], // right
+                    [x - 1, y], // left
+                    [x, y + 1], // down
+                    [x, y - 1], // up
+                    [x + 1, y + 1], // diagonal: bottom-right
+                    [x - 1, y - 1], // diagonal: top-left
+                    [x + 1, y - 1], // diagonal: top-right
+                    [x - 1, y + 1]  // diagonal: bottom-left
+                ];
+                
+                for (const [nx, ny] of neighbors) {
+                    // Skip if out of bounds
+                    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+                        continue;
+                    }
+                    
+                    // Skip if already visited
+                    const nKey = `${nx},${ny}`;
+                    if (visited.has(nKey)) {
+                        continue;
+                    }
+                    
+                    // Check if color matches the starting pixel
+                    const nPos = (ny * width + nx) * 4;
+                    const r = data[nPos];
+                    const g = data[nPos + 1];
+                    const b = data[nPos + 2];
+                    const a = data[nPos + 3];
+                    
+                    // For anti-aliased shapes, use custom matching
+                    let matches = false;
+                    if (isAntiAliasedShape) {
+                        if (isInsideBlackShape) {
+                            // If we're inside a black shape, fill all non-black pixels
+                            const isBlackPixel = r < 50 && g < 50 && b < 50;
+                            matches = !isBlackPixel;
+                        } else {
+                            // If we're outside, only fill pixels that match the starting color
+                            matches = colorsMatchWithTolerance(r, g, b, a, centerR, centerG, centerB, centerA, tolerance);
+                        }
+                    } else {
+                        // For regular areas, use standard tolerance matching
+                        matches = colorsMatchWithTolerance(r, g, b, a, centerR, centerG, centerB, centerA, tolerance);
+                    }
+                    
+                    if (matches) {
+                        stack.push([nx, ny]);
+                        visited.add(nKey);
+                    }
+                }
+                
+                // Log progress occasionally
+                if (pixelsToFill.length % 100000 === 0) {
+                    const elapsedTime = performance.now() - startTime;
+                    logAction('FILL', `Collection progress: ${pixelsToFill.length} pixels found, ${stack.length} in stack, ${elapsedTime.toFixed(0)}ms elapsed`);
+                }
+            }
+            
+            const collectionTime = performance.now() - startTime;
+            logAction('FILL', `Phase 1 complete: Collected ${pixelsToFill.length} pixels in ${collectionTime.toFixed(0)}ms`);
+            
+            // PHASE 2: Fill all collected pixels at once
+            logAction('FILL', 'Phase 2: Filling collected pixels');
+            const fillStartTime = performance.now();
+            
+            for (const [x, y, pos] of pixelsToFill) {
+                data[pos] = fillColorRGB.r;
+                data[pos + 1] = fillColorRGB.g;
+                data[pos + 2] = fillColorRGB.b;
+                data[pos + 3] = 255; // Full alpha
+            }
+            
+            const fillTime = performance.now() - fillStartTime;
+            logAction('FILL', `Phase 2 complete: Filled ${pixelsToFill.length} pixels in ${fillTime.toFixed(0)}ms`);
+            
+            // Put the modified image data back to the canvas
+            ctx.putImageData(imageData, 0, 0);
+            
+            // Calculate percentage of canvas filled
+            const percentFilled = ((pixelsToFill.length / (width * height)) * 100).toFixed(2);
+            const totalTime = performance.now() - startTime;
+            logAction('FILL', `Flood fill completed, filled ${pixelsToFill.length} pixels (${percentFilled}% of canvas) in ${totalTime.toFixed(0)}ms`);
+        }
+        
+        // Keep the original floodFill function for reference or other uses
+        function floodFill(startX, startY, fillColor) {
+            // Call the new implementation with current brush size
+            floodFillWithBrushSize(startX, startY, fillColor, size);
+        }
+        
+        // Helper function to convert hex color to RGB
+        function hexToRgb(hex) {
+            // Remove # if present
+            hex = hex.replace(/^#/, '');
+            
+            // Parse hex values
+            const bigint = parseInt(hex, 16);
+            const r = (bigint >> 16) & 255;
+            const g = (bigint >> 8) & 255;
+            const b = bigint & 255;
+            
+            return { r, g, b };
+        }
+        
+        // Helper function to check if colors match exactly
+        function colorsMatch(r1, g1, b1, a1, r2, g2, b2, a2) {
+            return r1 === r2 && g1 === g2 && b1 === b2 && a1 === a2;
+        }
+        
+        // Helper function to check if colors match with tolerance for anti-aliasing
+        function colorsMatchWithTolerance(r1, g1, b1, a1, r2, g2, b2, a2, tolerance) {
+            return Math.abs(r1 - r2) <= tolerance &&
+                   Math.abs(g1 - g2) <= tolerance &&
+                   Math.abs(b1 - b2) <= tolerance &&
+                   Math.abs(a1 - a2) <= tolerance;
+        }
+        
+        // Function to update the selection rectangle display
+        function updateSelectionRect() {
+            // Calculate the correct coordinates (handle any direction of dragging)
+            const left = Math.min(selectionStart.x, selectionEnd.x);
+            const top = Math.min(selectionStart.y, selectionEnd.y);
+            const width = Math.abs(selectionEnd.x - selectionStart.x);
+            const height = Math.abs(selectionEnd.y - selectionStart.y);
+            
+            // Update selection rectangle position and size
+            selectionRect.style.left = `${left}px`;
+            selectionRect.style.top = `${top}px`;
+            selectionRect.style.width = `${width}px`;
+            selectionRect.style.height = `${height}px`;
+            
+            // Make it visible if it has non-zero size
+            if (width > 0 && height > 0) {
+                selectionRect.style.display = 'block';
+            }
+            
+            // Log the update
+            logAction('SELECTION', `Updated selection rectangle: ${width}x${height} at (${left}, ${top})`);
+        }
+        
+        // Function to clear the selection
+        function clearSelection() {
+            selectionRect.style.display = 'none';
+            copiedImageData = null;
+            logAction('SELECTION', 'Selection cleared');
+            updateStatus('Selection cleared');
+        }
+        
+        // Function to copy the selected area
+        function copySelectedArea() {
+            // Check if there's a visible selection
+            if (selectionRect.style.display !== 'block') {
+                logAction('COPY', 'No selection to copy');
+                updateStatus('No selection to copy. Shift+Click+Drag to select an area first.');
+                return;
+            }
+            
+            // Calculate the selected region's bounds
+            const left = Math.min(selectionStart.x, selectionEnd.x);
+            const top = Math.min(selectionStart.y, selectionEnd.y);
+            const width = Math.abs(selectionEnd.x - selectionStart.x);
+            const height = Math.abs(selectionEnd.y - selectionStart.y);
+            
+            // Get canvas position to adjust coordinates properly
+            const rect = canvas.getBoundingClientRect();
+            
+            try {
+                // Get the selected image data directly from canvas coordinates
+                copiedImageData = ctx.getImageData(left, top, width, height);
+                
+                logAction('COPY', `Copied selection: ${width}x${height} from (${left}, ${top})`, {
+                    width, height,
+                    pixelCount: width * height
+                });
+                
+                updateStatus(`Copied ${width}x${height} pixel area. Press Cmd+V to paste.`);
+            } catch (error) {
+                logAction('COPY', 'Error copying selection', { error: error.message });
+                updateStatus(`Error copying selection: ${error.message}`);
+            }
+        }
+        
+        // Function to paste the copied area at cursor position
+        function pasteAtCursor() {
+            // Check if there's copied image data
+            if (!copiedImageData) {
+                logAction('PASTE', 'No image data to paste');
+                updateStatus('Nothing to paste. Copy a selection first with Cmd+C.');
+                return;
+            }
+            
+            // Get cursor position in canvas coordinates
+            const rect = canvas.getBoundingClientRect();
+            const x = lastCursorPosition.x - rect.left;
+            const y = lastCursorPosition.y - rect.top;
+            
+            try {
+                // Save canvas state before pasting
+                saveCanvasState();
+                
+                // Paste the copied image data at cursor position
+                ctx.putImageData(copiedImageData, x, y);
+                
+                logAction('PASTE', `Pasted ${copiedImageData.width}x${copiedImageData.height} at (${x}, ${y})`, {
+                    width: copiedImageData.width,
+                    height: copiedImageData.height
+                });
+                
+                updateStatus(`Pasted ${copiedImageData.width}x${copiedImageData.height} pixel area at cursor position.`);
+            } catch (error) {
+                logAction('PASTE', 'Error pasting image data', { error: error.message });
+                updateStatus(`Error pasting: ${error.message}`);
+            }
+        }
+        
+        // Function to generate rainbow palette with ~300 colors
+        function generateColorPalette() {
+            const palette = document.getElementById('colorPalette');
+            
+            // Clear any existing colors
+            palette.innerHTML = '';
+            
+            // Create rainbow gradient with saturation and lightness variations
+            // Number of hue steps (we'll get around 100 colors with variations)
+            const hueSteps = 15;
+            const saturationValues = [100, 75, 50];
+            const lightnessValues = [50, 30];
+            
+            logAction('PALETTE', `Generating palette with ${hueSteps} hue steps, ${saturationValues.length} saturation levels, ${lightnessValues.length} lightness levels`);
+            
+            // Add grayscale colors first
+            const grayscaleSteps = 10;
+            logAction('PALETTE', `Adding ${grayscaleSteps} grayscale colors`);
+            for (let g = 0; g < grayscaleSteps; g++) {
+                const value = Math.round(g * (100 / (grayscaleSteps - 1)));
+                const color = `hsl(0, 0%, ${value}%)`;
+                addColorToPalette(palette, color);
+            }
+            
+            // Add main rainbow spectrum with variations
+            let colorCount = grayscaleSteps;
+            logAction('PALETTE', 'Generating rainbow spectrum colors');
+            for (let h = 0; h < hueSteps; h++) {
+                const hue = Math.round(h * (360 / hueSteps));
+                
+                // Add all combinations of saturation and lightness for this hue
+                for (const saturation of saturationValues) {
+                    for (const lightness of lightnessValues) {
+                        const color = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+                        addColorToPalette(palette, color);
+                        colorCount++;
+                        
+                        // Log progress periodically
+                        if (colorCount % 20 === 0) {
+                            logAction('PALETTE', `Generated ${colorCount} colors so far...`);
+                        }
+                    }
+                }
+            }
+            
+            logAction('PALETTE', `Color palette complete with ${palette.children.length} colors`);
+            updateStatus(`Color palette loaded with ${palette.children.length} colors. Click to select primary color, Alt+click for alternative color.`);
+            console.log(`Generated palette with ${palette.children.length} colors`);
+        }
+        
+        // Helper to add a color to the palette
+        function addColorToPalette(palette, colorValue) {
+            // Convert HSL to hex for data-color attribute
+            const hexColor = hslToHex(colorValue);
+            
+            const colorElement = document.createElement('div');
+            colorElement.className = 'palette-color';
+            colorElement.style.backgroundColor = colorValue;
+            colorElement.setAttribute('data-color', hexColor);
+            colorElement.title = hexColor;
+            
+            // Add click event listener
+            colorElement.addEventListener('click', (e) => {
+                const selectedColor = e.target.getAttribute('data-color');
+                
+                // Update the currently active color (primary or alternative)
+                if (isUsingAltColor) {
+                    // Update alternative color
+                    altColor = selectedColor;
+                    altColorPicker.value = selectedColor;
+                    activeColor = altColor;
+                    logAction('SETTINGS', `Alternative color changed to ${selectedColor} from palette`);
+                    updateStatus(`Alternative color set to ${selectedColor}`);
+                } else {
+                    // Update primary color
+                    color = selectedColor;
+                    colorPicker.value = selectedColor;
+                    activeColor = color;
+                    logAction('SETTINGS', `Primary color changed to ${selectedColor} from palette`);
+                    updateStatus(`Primary color set to ${selectedColor}`);
+                }
+                
+                // Update UI to show which color picker is active
+                colorPicker.classList.toggle('active-color', !isUsingAltColor);
+                altColorPicker.classList.toggle('active-color', isUsingAltColor);
+            });
+            
+            palette.appendChild(colorElement);
+        }
+        
+        // Function to convert HSL to hex color
+        function hslToHex(hslColor) {
+            // Parse the HSL values from the string
+            const match = hslColor.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
+            if (!match) {
+                // Handle non-matching formats by trying alternative pattern
+                const altMatch = hslColor.match(/hsl\((\d+)[\s,]+(\d+)%[\s,]+(\d+)%\)/);
+                if (!altMatch) {
+                    console.log("Failed to parse HSL color:", hslColor);
+                    return "#000000"; // Default if parsing fails
+                }
+                return hslToRgbToHex(parseInt(altMatch[1]), parseInt(altMatch[2]), parseInt(altMatch[3]));
+            }
+            
+            return hslToRgbToHex(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
+        }
+        
+        // Helper to convert HSL values directly to hex
+        function hslToRgbToHex(h, s, l) {
+            h /= 360;
+            s /= 100;
+            l /= 100;
+            
+            // Convert HSL to RGB
+            let r, g, b;
+            
+            if (s === 0) {
+                r = g = b = l; // achromatic
+            } else {
+                const hue2rgb = (p, q, t) => {
+                    if (t < 0) t += 1;
+                    if (t > 1) t -= 1;
+                    if (t < 1/6) return p + (q - p) * 6 * t;
+                    if (t < 1/2) return q;
+                    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                    return p;
+                };
+                
+                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                const p = 2 * l - q;
+                
+                r = hue2rgb(p, q, h + 1/3);
+                g = hue2rgb(p, q, h);
+                b = hue2rgb(p, q, h - 1/3);
+            }
+            
+            // Convert RGB to hex
+            const toHex = c => {
+                const hex = Math.round(c * 255).toString(16);
+                return hex.length === 1 ? '0' + hex : hex;
+            };
+            
+            return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- Requirements:
+    - Provide navigation to game pages
+    - Simple and clean interface
+    -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Games Hub</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        h1 {
+            color: #333;
+        }
+        .game-links {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-top: 30px;
+        }
+        .game-link {
+            padding: 15px 30px;
+            background-color: #4CAF50;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 18px;
+        }
+        .game-link:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <h1>Welcome to Experiments Hub</h1>
+    <div class="game-links">
+        <a href="snake.html" class="game-link">Snake Game</a>
+        <a href="drawer.html" class="game-link">Drawing App</a>
+    </div>
+    
+    <script>
+        // Logging for troubleshooting
+        console.log("Index page loaded successfully");
+        document.querySelectorAll('.game-link').forEach(link => {
+            link.addEventListener('click', function(e) {
+                console.log(`User clicked on: ${this.textContent} (${this.href})`);
+            });
+        });
+    </script>
+</body>
+</html> 
